@@ -318,7 +318,7 @@ func downloadFile(ctx context.Context, model *fileResourceModel) error {
 	}
 
 	if fileAttributes.ETag == "" && fileAttributes.LastModified == "" {
-		return fmt.Errorf("Both ETag and LastModified headers are empty. Got Etag = '%s', LastModified = '%s'", fileAttributes.ETag, fileAttributes.LastModified)
+		return fmt.Errorf("both ETag and LastModified headers are empty. Got Etag = '%s', LastModified = '%s'", fileAttributes.ETag, fileAttributes.LastModified)
 	}
 
 	if !model.FileChmod.IsNull() && !model.FileChmod.IsUnknown() {

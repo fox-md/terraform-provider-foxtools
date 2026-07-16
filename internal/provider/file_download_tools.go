@@ -52,7 +52,7 @@ func checkCachingHeaders(ctx context.Context, resp *http.Response) (fileAttribut
 	response.LastModified = lastModified
 
 	if etag == "" && lastModified == "" {
-		return response, fmt.Errorf("Both ETag and LastModified headers are empty. Got Etag = '%s', LastModified = '%s'", etag, lastModified)
+		return response, fmt.Errorf("both ETag and LastModified headers are empty. Got Etag = '%s', LastModified = '%s'", etag, lastModified)
 	}
 
 	return response, nil
@@ -67,7 +67,7 @@ func parseLastModifiedHeader(ctx context.Context, resp *http.Response) (string, 
 
 	parsedTime, err := time.Parse(time.RFC1123, lastModStr)
 	if err != nil {
-		return "", fmt.Errorf("Error parsing date: %s", err.Error())
+		return "", fmt.Errorf("error parsing date: %s", err.Error())
 	}
 
 	timestamp := parsedTime.Unix()
@@ -104,7 +104,7 @@ func httpFileDownload(ctx context.Context, url, downloadPath string, headers map
 	contLen := resp.Header.Get("Content-Length")
 	fileSize, err := strconv.ParseInt(contLen, 10, 64)
 	if err != nil {
-		return response, fmt.Errorf("Error during fileSize conversion: %s", err.Error())
+		return response, fmt.Errorf("error during fileSize conversion: %s", err.Error())
 	}
 
 	limited := io.LimitReader(resp.Body, fileSize+1)
@@ -127,7 +127,7 @@ func httpFileDownload(ctx context.Context, url, downloadPath string, headers map
 	}
 
 	if written > fileSize {
-		return response, fmt.Errorf("Bytes written %d to file exceeded max file size of %d bytes", written, fileSize)
+		return response, fmt.Errorf("bytes written %d to file exceeded max file size of %d bytes", written, fileSize)
 	}
 
 	sha256Sum, err := SHA256File(downloadPath)
