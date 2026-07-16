@@ -94,7 +94,7 @@ resource "foxtools_file_download" "test" {
   }
 }
 `,
-				ExpectError: regexp.MustCompile(`Both ETag and LastModified headers are empty.`),
+				ExpectError: regexp.MustCompile(`both ETag and LastModified headers are empty.`),
 			},
 		},
 	})
