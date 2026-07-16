@@ -54,7 +54,7 @@ func (v HttpCacheValidator) isValid(ctx context.Context, url string, headers map
 		return false, err
 	}
 	if fileAttributes.ETag == "" && fileAttributes.LastModified == "" {
-		return false, errors.New("expected ETag or Last-Modified to have valid value. Both headers returned empty values.")
+		return false, errors.New("expected ETag or Last-Modified to have valid value. Both headers returned empty values")
 	}
 
 	return true, nil
