@@ -46,12 +46,14 @@ resource "foxtools_file_download" "chmod" {
 
 ### Optional
 
-- `download_trigger` (Map of Boolean) Toogles to trigger file re-download (no need to configure manually).
-- `file_chmod` (String) File permissions. Defaults to `644`.
-- `headers` (Map of String, Sensitive) Request headers.
+- `delete_on_destroy` (Boolean) Delete file on destroy. Defaults to `true`.
+- `download_trigger` (Map of Boolean) Toogles to trigger file update (no need to configure manually).
+- `file_chmod` (String) Set file permissions. Works only on non-Windows OS.
+- `headers` (Map of String, Sensitive) HTTP request headers.
 
 ### Read-Only
 
 - `download_timestamp` (String) Timestamp of file download.
-- `etag` (String) ETag value of the remote file.
+- `etag` (String) ETag header value.
+- `last_modified` (String) Last-Modified header value.
 - `sha256` (String) SHA256 sum of the local file.

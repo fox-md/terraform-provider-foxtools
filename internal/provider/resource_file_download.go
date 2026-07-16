@@ -5,17 +5,20 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"regexp"
 	"time"
 
+	foxvalidators "github.com/fox-md/terraform-provider-validators"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/mapdefault"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
@@ -37,25 +40,37 @@ func (r *fileDownloadResource) Schema(_ context.Context, _ resource.SchemaReques
 			"url": schema.StringAttribute{
 				Description: "URL path to download file from.",
 				Required:    true,
+				Validators: []validator.String{
+					foxvalidators.RestEndpointValidator{},
+					HttpCacheValidator{},
+				},
 			},
 			"filename": schema.StringAttribute{
 				Description: "Local file download path.",
 				Required:    true,
+				Validators: []validator.String{
+					stringvalidator.LengthAtLeast(5),
+				},
 			},
 			"file_chmod": schema.StringAttribute{
-				Description: "File permissions. Defaults to `644`.",
-				Default:     stringdefault.StaticString("644"),
+				Description: "Set file permissions. Works only on non-Windows OS.",
 				Optional:    true,
-				Computed:    true,
 				Validators: []validator.String{
 					stringvalidator.RegexMatches(regexp.MustCompile(`^[0-7]{3}$`), "Change mode is not valid."),
+					foxvalidators.OsFamilyNonWindowsValidator{},
 				},
 			},
 			"headers": schema.MapAttribute{
-				Description: "Request headers.",
+				Description: "HTTP request headers.",
 				Optional:    true,
 				ElementType: types.StringType,
 				Sensitive:   true,
+			},
+			"delete_on_destroy": schema.BoolAttribute{
+				Description: "Delete file on destroy. Defaults to `true`.",
+				Optional:    true,
+				Computed:    true,
+				Default:     booldefault.StaticBool(true),
 			},
 			"download_trigger": schema.MapAttribute{
 				Optional:    true,
@@ -70,10 +85,14 @@ func (r *fileDownloadResource) Schema(_ context.Context, _ resource.SchemaReques
 						},
 					),
 				),
-				Description: "Toogles to trigger file re-download (no need to configure manually).",
+				Description: "Toogles to trigger file update (no need to configure manually).",
 			},
 			"etag": schema.StringAttribute{
-				Description: "ETag value of the remote file.",
+				Description: "ETag header value.",
+				Computed:    true,
+			},
+			"last_modified": schema.StringAttribute{
+				Description: "Last-Modified header value.",
 				Computed:    true,
 			},
 			"sha256": schema.StringAttribute{
@@ -98,7 +117,7 @@ func (r *fileDownloadResource) Create(ctx context.Context, req resource.CreateRe
 
 	err := downloadFile(ctx, &plan)
 	if err != nil {
-		resp.Diagnostics.AddError("failed to download file", err.Error())
+		resp.Diagnostics.AddError("Failed to download file", err.Error())
 		return
 	}
 
@@ -107,26 +126,33 @@ func (r *fileDownloadResource) Create(ctx context.Context, req resource.CreateRe
 
 func (r *fileDownloadResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var state fileResourceModel
+	var isChmodUpToDate bool
+	var headers map[string]string
+
 	diags := req.State.Get(ctx, &state)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	outputPath := state.Filename.ValueString()
-	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
+	exists, err := fileExists(state.Filename.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to check if file exists", err.Error())
+		return
+	}
+
+	if !exists {
 		resp.State.RemoveResource(ctx)
 		return
 	}
 
-	var headers map[string]string
 	diags = state.Headers.ElementsAs(ctx, &headers, false)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	fileChecksums, err := getHashes(ctx, headers, state.URL.ValueString(), state.Filename.ValueString())
+	fileAttributes, err := getLocalAndRemoteFilesAttrs(ctx, headers, state.URL.ValueString(), state.Filename.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to check hashes", err.Error())
 		return
@@ -138,9 +164,15 @@ func (r *fileDownloadResource) Read(ctx context.Context, req resource.ReadReques
 		return
 	}
 
-	isFileUpToDate := fileChecksums.Etag == state.Etag.ValueString() && fileChecksums.sha256 == state.Sha256.ValueString()
+	isFileUpToDate := fileAttributes.ETag == state.Etag.ValueString() &&
+		fileAttributes.Sha256 == state.Sha256.ValueString() &&
+		fileAttributes.LastModified == state.LastModified.ValueString()
 
-	isChmodUpToDate := localChmod == state.FileChmod.ValueString()
+	if !state.FileChmod.IsNull() && !state.FileChmod.IsUnknown() {
+		isChmodUpToDate = localChmod == state.FileChmod.ValueString()
+	} else {
+		isChmodUpToDate = true
+	}
 
 	state.DownloadTrigger = types.MapValueMust(
 		types.BoolType,
@@ -154,15 +186,17 @@ func (r *fileDownloadResource) Read(ctx context.Context, req resource.ReadReques
 }
 
 func (r *fileDownloadResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan fileResourceModel
-	var state fileResourceModel
+	var planChmod string
+	var stateChmod string
 
+	var plan fileResourceModel
 	diags := req.Plan.Get(ctx, &plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
+	var state fileResourceModel
 	diags = req.State.Get(ctx, &state)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
@@ -183,13 +217,15 @@ func (r *fileDownloadResource) Update(ctx context.Context, req resource.UpdateRe
 		return
 	}
 
-	fileChecksums, err := getHashes(ctx, headers, plan.URL.ValueString(), state.Filename.ValueString())
+	fileAttributes, err := getLocalAndRemoteFilesAttrs(ctx, headers, plan.URL.ValueString(), state.Filename.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to check hashes", err.Error())
 		return
 	}
 
-	isFileUpToDate := fileChecksums.Etag == state.Etag.ValueString() && fileChecksums.sha256 == state.Sha256.ValueString()
+	isFileUpToDate := fileAttributes.ETag == state.Etag.ValueString() &&
+		fileAttributes.Sha256 == state.Sha256.ValueString() &&
+		fileAttributes.LastModified == state.LastModified.ValueString()
 
 	if state.Filename.ValueString() != plan.Filename.ValueString() && isFileUpToDate {
 		err := os.Rename(state.Filename.ValueString(), plan.Filename.ValueString())
@@ -199,7 +235,19 @@ func (r *fileDownloadResource) Update(ctx context.Context, req resource.UpdateRe
 		}
 	}
 
-	if (!triggers["chmod_up_to_date"] || state.FileChmod.ValueString() != plan.FileChmod.ValueString()) && isFileUpToDate {
+	if !state.FileChmod.IsNull() && !state.FileChmod.IsUnknown() {
+		stateChmod = state.FileChmod.ValueString()
+	} else {
+		stateChmod = ""
+	}
+
+	if !plan.FileChmod.IsNull() && !plan.FileChmod.IsUnknown() {
+		planChmod = plan.FileChmod.ValueString()
+	} else {
+		planChmod = ""
+	}
+
+	if (!triggers["chmod_up_to_date"] || stateChmod != planChmod) && isFileUpToDate && planChmod != "" {
 		err := setFileChmod(plan.Filename.ValueString(), plan.FileChmod.ValueString())
 		if err != nil {
 			resp.Diagnostics.AddError("Failed to change file permissions:", err.Error())
@@ -210,12 +258,13 @@ func (r *fileDownloadResource) Update(ctx context.Context, req resource.UpdateRe
 	if !triggers["download_file"] || !isFileUpToDate {
 		err := downloadFile(ctx, &plan)
 		if err != nil {
-			resp.Diagnostics.AddError("failed to download file", err.Error())
+			resp.Diagnostics.AddError("Failed to download file", err.Error())
 			return
 		}
 	} else {
-		plan.Etag = types.StringValue(fileChecksums.Etag)
-		plan.Sha256 = types.StringValue(fileChecksums.sha256)
+		plan.Etag = types.StringValue(fileAttributes.ETag)
+		plan.Sha256 = types.StringValue(fileAttributes.Sha256)
+		plan.LastModified = types.StringValue(fileAttributes.LastModified)
 		plan.DownloadTimestamp = types.StringValue(state.DownloadTimestamp.ValueString())
 	}
 
@@ -229,13 +278,16 @@ func (r *fileDownloadResource) Delete(ctx context.Context, req resource.DeleteRe
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	err := os.Remove(state.Filename.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error deleting file",
-			"Could not delete file, unexpected error: "+err.Error(),
-		)
-		return
+
+	if state.DeleteOnDestroy.ValueBool() {
+		err := os.Remove(state.Filename.ValueString())
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			resp.Diagnostics.AddError(
+				"Error deleting file",
+				"Could not delete file, unexpected error: "+err.Error(),
+			)
+			return
+		}
 	}
 }
 
@@ -245,9 +297,11 @@ type fileResourceModel struct {
 	FileChmod         types.String `tfsdk:"file_chmod"`
 	Headers           types.Map    `tfsdk:"headers"`
 	Etag              types.String `tfsdk:"etag"`
+	LastModified      types.String `tfsdk:"last_modified"`
 	Sha256            types.String `tfsdk:"sha256"`
 	DownloadTrigger   types.Map    `tfsdk:"download_trigger"`
 	DownloadTimestamp types.String `tfsdk:"download_timestamp"`
+	DeleteOnDestroy   types.Bool   `tfsdk:"delete_on_destroy"`
 }
 
 func downloadFile(ctx context.Context, model *fileResourceModel) error {
@@ -258,18 +312,25 @@ func downloadFile(ctx context.Context, model *fileResourceModel) error {
 		}
 	}
 
-	fileCheckSums, err := httpFileDownload(ctx, model.URL.ValueString(), model.Filename.ValueString(), headers)
+	fileAttributes, err := httpFileDownload(ctx, model.URL.ValueString(), model.Filename.ValueString(), headers)
 	if err != nil {
 		return fmt.Errorf("%s", err.Error())
 	}
 
-	err = setFileChmod(model.Filename.ValueString(), model.FileChmod.ValueString())
-	if err != nil {
-		return fmt.Errorf("%s", err.Error())
+	if fileAttributes.ETag == "" && fileAttributes.LastModified == "" {
+		return fmt.Errorf("both ETag and LastModified headers are empty. Got Etag = '%s', LastModified = '%s'", fileAttributes.ETag, fileAttributes.LastModified)
 	}
 
-	model.Etag = types.StringValue(fileCheckSums.Etag)
-	model.Sha256 = types.StringValue(fileCheckSums.sha256)
+	if !model.FileChmod.IsNull() && !model.FileChmod.IsUnknown() {
+		err = setFileChmod(model.Filename.ValueString(), model.FileChmod.ValueString())
+		if err != nil {
+			return fmt.Errorf("%s", err.Error())
+		}
+	}
+
+	model.Etag = types.StringValue(fileAttributes.ETag)
+	model.Sha256 = types.StringValue(fileAttributes.Sha256)
+	model.LastModified = types.StringValue(fileAttributes.LastModified)
 	model.DownloadTimestamp = types.StringValue(time.Now().Format(time.RFC3339Nano))
 	model.DownloadTrigger = types.MapValueMust(
 		types.BoolType,
@@ -281,19 +342,17 @@ func downloadFile(ctx context.Context, model *fileResourceModel) error {
 	return nil
 }
 
-func getHashes(ctx context.Context, headers map[string]string, url string, filePath string) (fileChecksums, error) {
-	var fileChecksums fileChecksums
+func getLocalAndRemoteFilesAttrs(ctx context.Context, headers map[string]string, url string, filePath string) (fileAttributes, error) {
+	response, err := getCachingHeaders(ctx, url, headers)
+	if err != nil {
+		return response, fmt.Errorf("failed to get Etag: %s", err.Error())
+	}
 
 	localSha256, err := SHA256File(filePath)
 	if err != nil {
-		return fileChecksums, fmt.Errorf("failed to read local file hash: %s", err.Error())
+		return response, fmt.Errorf("failed to read local file hash: %s", err.Error())
 	}
 
-	etag, err := getEtag(ctx, url, headers)
-	if err != nil {
-		return fileChecksums, fmt.Errorf("failed to get Etag: %s", err.Error())
-	}
-	fileChecksums.sha256 = localSha256
-	fileChecksums.Etag = etag
-	return fileChecksums, nil
+	response.Sha256 = localSha256
+	return response, nil
 }

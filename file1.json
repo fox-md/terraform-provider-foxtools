@@ -1,0 +1,21 @@
+{
+  "users": [
+    {
+      "id": 1,
+      "name": "Alex Xela",
+      "email": "alex.xela@example.com",
+      "role": "Admin",
+      "isActive": true,
+      "profile": {
+        "age": 33,
+        "company": "ABC Solutions",
+        "skills": [
+          "JavaScript",
+          "Python",
+          "Docker"
+        ]
+      },
+      "createdAt": "2000-01-01T08:08:08Z"
+    }
+  ]
+}

@@ -3,6 +3,7 @@ module terraform-provider-foxtools
 go 1.25.8
 
 require (
+	github.com/fox-md/terraform-provider-validators v1.0.3
 	github.com/hashicorp/terraform-plugin-framework v1.19.0
 	github.com/hashicorp/terraform-plugin-go v0.31.0
 	github.com/hashicorp/terraform-plugin-log v0.10.0
