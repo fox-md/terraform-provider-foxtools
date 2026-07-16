@@ -5,7 +5,6 @@ package provider
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -43,6 +42,59 @@ resource "foxtools_file_download" "test" {
 					// Verify dynamic values have any value set in the state.
 					resource.TestCheckResourceAttrSet("foxtools_file_download.test", "download_timestamp"),
 				),
+			},
+		},
+	})
+}
+
+func TestFileDownloadNoEtag(t *testing.T) {
+
+	sha256, _ := SHA256File(ProjectRoot() + "/tests/file_download/file1.json")
+
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "test.json")
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: providerConfig + `
+resource "foxtools_file_download" "test" {
+  url = "http://localhost:8084/file1.json"
+  filename = "` + filePath + `"
+  headers = {
+	"Authorization" = "Basic YWRtaW46cmVnaXN0cnkx"
+  }
+}
+`,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("foxtools_file_download.test", "sha256", sha256),
+					// Verify dynamic values have any value set in the state.
+					resource.TestCheckResourceAttrSet("foxtools_file_download.test", "download_timestamp"),
+				),
+			},
+		},
+	})
+}
+
+func TestFileDownloadNoCachingHeaders(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "test.json")
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: providerConfig + `
+resource "foxtools_file_download" "test" {
+  url = "http://localhost:8083/file1.json"
+  filename = "` + filePath + `"
+  headers = {
+	"Authorization" = "Basic YWRtaW46cmVnaXN0cnkx"
+  }
+}
+`,
+				ExpectError: regexp.MustCompile(`Both ETag and LastModified headers are empty.`),
 			},
 		},
 	})
@@ -112,15 +164,6 @@ resource "foxtools_file_download" "test" {
 					if err != nil {
 						return err
 					}
-
-					// info, err := os.Stat(filePath)
-					// if err != nil {
-					// 	log.Fatal(err)
-					// }
-
-					// mode := info.Mode()
-					// perms := mode.Perm()
-					// localPerms := strings.TrimSpace(fmt.Sprintf("%4o", perms))
 
 					if localPerms != filePerm2 {
 						return fmt.Errorf("File permissions are not valid. Expected: '%s', Actual: '%s'", filePerm2, localPerms)
@@ -234,7 +277,7 @@ resource "foxtools_file_download" "test" {
   filename = "` + filePath + `"
 }
 `,
-				ExpectError: regexp.MustCompile(`Unexpected http response code: 401 Unauthorized`),
+				ExpectError: regexp.MustCompile(`401 Unauthorized`),
 			},
 			{
 				Config: providerConfig + `
@@ -395,12 +438,12 @@ func TestFileDownloadChangeURLDifferentFiles(t *testing.T) {
 
 	content_01, err := os.ReadFile(ProjectRoot() + "/tests/file_download/file-01.txt")
 	if err != nil {
-		log.Fatalf("Failed to read file: %s", err)
+		t.Fatalf("Failed to read file: %s", err)
 	}
 
 	content_02, err := os.ReadFile(ProjectRoot() + "/tests/file_download/file-02.txt")
 	if err != nil {
-		log.Fatalf("Failed to read file: %s", err)
+		t.Fatalf("Failed to read file: %s", err)
 	}
 
 	tmpDir := t.TempDir()
@@ -421,16 +464,16 @@ resource "foxtools_file_download" "test" {
 
 					stateTimestamp = rs.Primary.Attributes["download_timestamp"]
 
-					t, err := times.Stat(filePath)
+					ts, err := times.Stat(filePath)
 					if err != nil {
 						return fmt.Errorf("failed to read file creation timestamp, %s", err.Error())
 					}
 
-					localTimestamp = t.ChangeTime().String()
+					localTimestamp = ts.ChangeTime().String()
 
 					content, err := os.ReadFile(filePath)
 					if err != nil {
-						log.Fatalf("Failed to read file: %s", err)
+						t.Fatalf("Failed to read file: %s", err)
 					}
 
 					if string(content) != string(content_01) {
@@ -473,18 +516,18 @@ resource "foxtools_file_download" "test" {
 						return fmt.Errorf("download_timestamp values match. Old: %s = Current: %s", stateTimestamp, rs.Primary.Attributes["download_timestamp"])
 					}
 
-					t, err := times.Stat(filePath)
+					ts, err := times.Stat(filePath)
 					if err != nil {
 						return fmt.Errorf("failed to read file creation timestamp, %s", err.Error())
 					}
 
-					if localTimestamp == t.ChangeTime().String() {
-						return fmt.Errorf("local file changetime has not changed. Old: %s = Current: %s", localTimestamp, t.ChangeTime().String())
+					if localTimestamp == ts.ChangeTime().String() {
+						return fmt.Errorf("local file changetime has not changed. Old: %s = Current: %s", localTimestamp, ts.ChangeTime().String())
 					}
 
 					content, err := os.ReadFile(filePath)
 					if err != nil {
-						log.Fatalf("Failed to read file: %s", err)
+						t.Fatalf("Failed to read file: %s", err)
 					}
 
 					if string(content) != string(content_02) {
@@ -800,12 +843,107 @@ resource "foxtools_file_download" "test" {
 	})
 }
 
+func TestFileDownloadMigration101to111(t *testing.T) {
+	var localTimestamp string
+	var stateTimestamp string
+
+	sha256, _ := SHA256File(ProjectRoot() + "/tests/file_download/file1.json")
+
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "test.json")
+
+	resource.Test(t, resource.TestCase{
+		Steps: []resource.TestStep{
+			{
+				ExternalProviders: map[string]resource.ExternalProvider{
+					"foxtools": {
+						VersionConstraint: "1.0.1",
+						Source:            "registry.terraform.io/fox-md/foxtools",
+					},
+				},
+				Config: providerConfig + `
+resource "foxtools_file_download" "test" {
+  url = "http://localhost:8081/file1.json"
+  filename = "` + filePath + `"
+}
+`,
+				Check: resource.TestCheckFunc(func(s *terraform.State) error {
+					rs := s.RootModule().Resources["foxtools_file_download.test"]
+
+					stateTimestamp = rs.Primary.Attributes["download_timestamp"]
+
+					t, err := times.Stat(filePath)
+					if err != nil {
+						return fmt.Errorf("failed to read file creation timestamp, %s", err.Error())
+					}
+
+					localTimestamp = t.ChangeTime().String()
+
+					return nil
+				}),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"foxtools_file_download.test",
+						tfjsonpath.New("sha256"),
+						knownvalue.StringExact(sha256),
+					),
+					statecheck.ExpectKnownValue(
+						"foxtools_file_download.test",
+						tfjsonpath.New("etag"),
+						knownvalue.NotNull(),
+					),
+				},
+			},
+			{
+				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				Config: providerConfig + `
+resource "foxtools_file_download" "test" {
+  url = "http://localhost:8081/file1.json"
+  filename = "` + filePath + `"
+}
+`,
+				Check: resource.TestCheckFunc(func(s *terraform.State) error {
+					rs := s.RootModule().Resources["foxtools_file_download.test"]
+					if stateTimestamp != rs.Primary.Attributes["download_timestamp"] {
+						return fmt.Errorf("download_timestamp values do not match. Expected: %s, Actual: %s", stateTimestamp, rs.Primary.Attributes["download_timestamp"])
+					}
+					t, err := times.Stat(filePath)
+					if err != nil {
+						return fmt.Errorf("failed to read file creation timestamp, %s", err.Error())
+					}
+
+					if localTimestamp != t.ChangeTime().String() {
+						return fmt.Errorf("local file changetime has been modified. Expected: %s, Actual: %s", localTimestamp, t.ChangeTime().String())
+					}
+					return nil
+				}),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"foxtools_file_download.test",
+						tfjsonpath.New("sha256"),
+						knownvalue.StringExact(sha256),
+					),
+					statecheck.ExpectKnownValue(
+						"foxtools_file_download.test",
+						tfjsonpath.New("last_modified"),
+						knownvalue.NotNull(),
+					),
+					statecheck.ExpectKnownValue(
+						"foxtools_file_download.test",
+						tfjsonpath.New("etag"),
+						knownvalue.NotNull(),
+					),
+				},
+			},
+		},
+	})
+}
+
 func ProjectRoot() string {
 	_, filename, _, ok := runtime.Caller(0)
 	if !ok {
 		panic("unable to determine caller")
 	}
 
-	// Adjust ".." depending on where this file lives.
 	return filepath.Clean(filepath.Join(filepath.Dir(filename), "../.."))
 }

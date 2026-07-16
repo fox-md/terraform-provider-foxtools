@@ -5,7 +5,6 @@ package provider
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -13,57 +12,15 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
-func SHA256File(path string) (string, error) {
-	file, err := os.Open(path)
+func sendHttpRequest(ctx context.Context, url, method string, headers map[string]string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-
-	hasher := sha256.New()
-
-	if _, err := io.Copy(hasher, file); err != nil {
-		return "", err
-	}
-
-	return fmt.Sprintf("%x", hasher.Sum(nil)), nil
-}
-
-func getFileChmod(filePath string) (string, error) {
-	info, err := os.Stat(filePath)
-	if err != nil {
-		return "", fmt.Errorf("failed to get file permission: %s", err.Error())
-	}
-
-	mode := info.Mode()
-	perm := mode.Perm()
-	perms := strings.TrimSpace(fmt.Sprintf("%4o", perm))
-	return perms, nil
-}
-
-func setFileChmod(filePath string, chmod string) error {
-	perm, err := strconv.ParseUint(chmod, 8, 32)
-	if err != nil {
-		return fmt.Errorf("failed to convert chmod permissions: %v", err)
-	}
-	filePerms := os.FileMode(perm)
-	err = os.Chmod(filePath, filePerms)
-	if err != nil {
-		return fmt.Errorf("failed to set file permissions: %v", err)
-	}
-	return nil
-}
-
-func httpFileDownload(ctx context.Context, url, downloadPath string, headers map[string]string) (response fileChecksums, err error) {
-
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		return response, err
+		return nil, err
 	}
 
 	for k, v := range headers {
@@ -73,20 +30,84 @@ func httpFileDownload(ctx context.Context, url, downloadPath string, headers map
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		return response, err
+		return nil, err
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return response, errors.New("Unexpected http response code: " + resp.Status)
+		return nil, errors.New("Unexpected http response code. Expected 200, got: " + resp.Status)
 	}
 
-	response.Etag = resp.Header.Get("ETag")
-	tflog.Debug(ctx, fmt.Sprintf("ETag value = %s", response.Etag))
+	return resp, nil
+}
 
-	if response.Etag == "" {
-		return response, errors.New("failed to read Etag header value or its value is empty")
+func checkCachingHeaders(ctx context.Context, resp *http.Response) (fileAttributes, error) {
+	var response fileAttributes
+	etag := parseETagHeader(ctx, resp)
+	response.ETag = etag
+
+	lastModified, err := parseLastModifiedHeader(ctx, resp)
+	if err != nil {
+		return response, err
 	}
+	response.LastModified = lastModified
+
+	if etag == "" && lastModified == "" {
+		return response, fmt.Errorf("Both ETag and LastModified headers are empty. Got Etag = '%s', LastModified = '%s'", etag, lastModified)
+	}
+
+	return response, nil
+}
+
+func parseLastModifiedHeader(ctx context.Context, resp *http.Response) (string, error) {
+	lastModStr := resp.Header.Get("Last-Modified")
+	if lastModStr == "" {
+		tflog.Debug(ctx, "Last-Modified header not found in response")
+		return "", nil
+	}
+
+	parsedTime, err := time.Parse(time.RFC1123, lastModStr)
+	if err != nil {
+		return "", fmt.Errorf("Error parsing date: %s", err.Error())
+	}
+
+	timestamp := parsedTime.Unix()
+	tflog.Debug(ctx, fmt.Sprintf("Last-Modified unix timestamp value = '%d'", timestamp))
+
+	return strconv.FormatInt(timestamp, 10), nil
+}
+
+func parseETagHeader(ctx context.Context, resp *http.Response) string {
+	etag := resp.Header.Get("ETag")
+	if etag == "" {
+		tflog.Debug(ctx, "ETag header not found in response")
+		return ""
+	}
+	tflog.Debug(ctx, fmt.Sprintf("ETag value = %s", etag))
+	return etag
+}
+
+func httpFileDownload(ctx context.Context, url, downloadPath string, headers map[string]string) (fileAttributes, error) {
+	var response fileAttributes
+
+	resp, err := sendHttpRequest(ctx, url, http.MethodGet, headers)
+	if err != nil {
+		return response, err
+	}
+
+	defer resp.Body.Close()
+
+	response, err = checkCachingHeaders(ctx, resp)
+	if err != nil {
+		return response, err
+	}
+
+	contLen := resp.Header.Get("Content-Length")
+	fileSize, err := strconv.ParseInt(contLen, 10, 64)
+	if err != nil {
+		return response, fmt.Errorf("Error during fileSize conversion: %s", err.Error())
+	}
+
+	limited := io.LimitReader(resp.Body, fileSize+1)
 
 	dir := filepath.Dir(downloadPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -100,9 +121,13 @@ func httpFileDownload(ctx context.Context, url, downloadPath string, headers map
 	defer out.Close()
 
 	// Stream directly from network to disk
-	_, err = io.Copy(out, resp.Body)
+	written, err := io.Copy(out, limited)
 	if err != nil {
 		return response, err
+	}
+
+	if written > fileSize {
+		return response, fmt.Errorf("Bytes written %d to file exceeded max file size of %d bytes", written, fileSize)
 	}
 
 	sha256Sum, err := SHA256File(downloadPath)
@@ -110,41 +135,30 @@ func httpFileDownload(ctx context.Context, url, downloadPath string, headers map
 		return response, err
 	}
 
-	response.sha256 = sha256Sum
+	response.Sha256 = sha256Sum
 	return response, nil
 }
 
-func getEtag(ctx context.Context, url string, headers map[string]string) (string, error) {
-	req, err := http.NewRequest(http.MethodHead, url, nil)
+func getCachingHeaders(ctx context.Context, url string, headers map[string]string) (fileAttributes, error) {
+	var response fileAttributes
+
+	resp, err := sendHttpRequest(ctx, url, http.MethodHead, headers)
 	if err != nil {
-		return "", err
+		return response, err
 	}
 
-	for k, v := range headers {
-		req.Header.Set(k, v)
-	}
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return "", errors.New("failed to download file: " + resp.Status)
+	response, err = checkCachingHeaders(ctx, resp)
+	if err != nil {
+		return response, err
 	}
 
-	etag := resp.Header.Get("ETag")
-	tflog.Debug(ctx, fmt.Sprintf("ETag value = %s", etag))
-
-	if etag == "" {
-		return "", errors.New("failed to read Etag header value or its value is empty")
-	}
-	return etag, nil
+	return response, nil
 }
 
-type fileChecksums struct {
-	Etag   string
-	sha256 string
+type fileAttributes struct {
+	ETag         string
+	Sha256       string
+	LastModified string
 }
