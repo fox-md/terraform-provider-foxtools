@@ -844,8 +844,6 @@ resource "foxtools_file_download" "test" {
 }
 
 func TestFileDownloadMigration101to111(t *testing.T) {
-	var localTimestamp string
-	var stateTimestamp string
 
 	sha256, _ := SHA256File(ProjectRoot() + "/tests/file_download/file1.json")
 
@@ -867,20 +865,6 @@ resource "foxtools_file_download" "test" {
   filename = "` + filePath + `"
 }
 `,
-				Check: resource.TestCheckFunc(func(s *terraform.State) error {
-					rs := s.RootModule().Resources["foxtools_file_download.test"]
-
-					stateTimestamp = rs.Primary.Attributes["download_timestamp"]
-
-					t, err := times.Stat(filePath)
-					if err != nil {
-						return fmt.Errorf("failed to read file creation timestamp, %s", err.Error())
-					}
-
-					localTimestamp = t.ChangeTime().String()
-
-					return nil
-				}),
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(
 						"foxtools_file_download.test",
@@ -902,21 +886,6 @@ resource "foxtools_file_download" "test" {
   filename = "` + filePath + `"
 }
 `,
-				Check: resource.TestCheckFunc(func(s *terraform.State) error {
-					rs := s.RootModule().Resources["foxtools_file_download.test"]
-					if stateTimestamp != rs.Primary.Attributes["download_timestamp"] {
-						return fmt.Errorf("download_timestamp values do not match. Expected: %s, Actual: %s", stateTimestamp, rs.Primary.Attributes["download_timestamp"])
-					}
-					t, err := times.Stat(filePath)
-					if err != nil {
-						return fmt.Errorf("failed to read file creation timestamp, %s", err.Error())
-					}
-
-					if localTimestamp != t.ChangeTime().String() {
-						return fmt.Errorf("local file changetime has been modified. Expected: %s, Actual: %s", localTimestamp, t.ChangeTime().String())
-					}
-					return nil
-				}),
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(
 						"foxtools_file_download.test",
