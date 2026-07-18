@@ -941,8 +941,8 @@ func TestFileDownloaderWindowsChmod(t *testing.T) {
 	sha256Sum := sha256.Sum256(body)
 	sha256Hex := hex.EncodeToString(sha256Sum[:])
 	filePerm := "444"
-	tmpDir := strings.ReplaceAll(t.TempDir(), `\`, `\\`)
-	filePath := filepath.Join(tmpDir, "test.json")
+	tmpDir := t.TempDir()
+	filePath := strings.ReplaceAll(filepath.Join(tmpDir, "test.json"), `\`, `\\`)
 
 	resource.ParallelTest(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
