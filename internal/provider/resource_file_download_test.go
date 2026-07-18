@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/djherbis/times"
@@ -940,7 +941,7 @@ func TestFileDownloaderWindowsChmod(t *testing.T) {
 	sha256Sum := sha256.Sum256(body)
 	sha256Hex := hex.EncodeToString(sha256Sum[:])
 	filePerm := "444"
-	tmpDir := t.TempDir()
+	tmpDir := strings.ReplaceAll(t.TempDir(), `\`, `\\`)
 	filePath := filepath.Join(tmpDir, "test.json")
 
 	resource.ParallelTest(t, resource.TestCase{
@@ -954,10 +955,23 @@ resource "foxtools_file_download" "test" {
   file_chmod = "` + filePerm + `"
 }
 `,
-				Check: resource.ComposeTestCheckFunc(
-					resource.TestCheckResourceAttr("utilities_file_downloader.file_test", "sha256", sha256Hex),
-					resource.TestCheckResourceAttr("utilities_file_downloader.file_test", "filename", "test_output.txt"),
-				),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"foxtools_file_download.test",
+						tfjsonpath.New("sha256"),
+						knownvalue.StringExact(sha256Hex),
+					),
+					statecheck.ExpectKnownValue(
+						"foxtools_file_download.test",
+						tfjsonpath.New("file_chmod"),
+						knownvalue.StringExact(filePerm),
+					),
+					statecheck.ExpectKnownValue(
+						"foxtools_file_download.test",
+						tfjsonpath.New("download_timestamp"),
+						knownvalue.NotNull(),
+					),
+				},
 			},
 		},
 	})
