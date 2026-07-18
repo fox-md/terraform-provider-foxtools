@@ -940,7 +940,8 @@ func TestFileDownloaderWindowsChmod(t *testing.T) {
 
 	sha256Sum := sha256.Sum256(body)
 	sha256Hex := hex.EncodeToString(sha256Sum[:])
-	filePerm := "444"
+	filePerm1 := "444"
+	filePerm2 := "644"
 	tmpDir := t.TempDir()
 	filePath := strings.ReplaceAll(filepath.Join(tmpDir, "test.json"), `\`, `\\`)
 
@@ -952,7 +953,7 @@ func TestFileDownloaderWindowsChmod(t *testing.T) {
 resource "foxtools_file_download" "test" {
   url = "` + ts.URL + `"
   filename = "` + filePath + `"
-  file_chmod = "` + filePerm + `"
+  file_chmod = "` + filePerm1 + `"
 }
 `,
 				ConfigStateChecks: []statecheck.StateCheck{
@@ -964,7 +965,33 @@ resource "foxtools_file_download" "test" {
 					statecheck.ExpectKnownValue(
 						"foxtools_file_download.test",
 						tfjsonpath.New("file_chmod"),
-						knownvalue.StringExact(filePerm),
+						knownvalue.StringExact(filePerm1),
+					),
+					statecheck.ExpectKnownValue(
+						"foxtools_file_download.test",
+						tfjsonpath.New("download_timestamp"),
+						knownvalue.NotNull(),
+					),
+				},
+			},
+			{
+				Config: providerConfig + `
+resource "foxtools_file_download" "test" {
+  url = "` + ts.URL + `"
+  filename = "` + filePath + `"
+  file_chmod = "` + filePerm2 + `"
+}
+`,
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"foxtools_file_download.test",
+						tfjsonpath.New("sha256"),
+						knownvalue.StringExact(sha256Hex),
+					),
+					statecheck.ExpectKnownValue(
+						"foxtools_file_download.test",
+						tfjsonpath.New("file_chmod"),
+						knownvalue.StringExact(filePerm2),
 					),
 					statecheck.ExpectKnownValue(
 						"foxtools_file_download.test",
