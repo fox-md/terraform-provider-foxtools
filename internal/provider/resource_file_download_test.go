@@ -272,6 +272,7 @@ resource "foxtools_file_download" "test" {
 }
 
 func TestFileDownloadBasicAuth(t *testing.T) {
+	requireNonWindows(t)
 
 	sha256, _ := SHA256File(ProjectRoot() + "/tests/file_download/file1.json")
 
