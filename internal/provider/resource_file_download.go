@@ -126,6 +126,7 @@ func (r *fileDownloadResource) Create(ctx context.Context, req resource.CreateRe
 func (r *fileDownloadResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var state fileResourceModel
 	var isChmodUpToDate bool
+	var localChmod string
 	var headers map[string]string
 
 	diags := req.State.Get(ctx, &state)
@@ -157,10 +158,14 @@ func (r *fileDownloadResource) Read(ctx context.Context, req resource.ReadReques
 		return
 	}
 
-	localChmod, err := getFileChmod(state.Filename.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError("Error checking file permissions", err.Error())
-		return
+	if IsOSChmodCompat() {
+		localChmod, err = getFileChmod(state.Filename.ValueString())
+		if err != nil {
+			resp.Diagnostics.AddError("Error checking file permissions", err.Error())
+			return
+		}
+	} else {
+		localChmod = state.FileChmod.ValueString()
 	}
 
 	isFileUpToDate := fileAttributes.ETag == state.Etag.ValueString() &&
