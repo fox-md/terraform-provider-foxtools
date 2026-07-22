@@ -57,6 +57,7 @@ func (r *fileDownloadResource) Schema(_ context.Context, _ resource.SchemaReques
 				Optional:    true,
 				Validators: []validator.String{
 					stringvalidator.RegexMatches(regexp.MustCompile(`^[0-7]{3}$`), "Change mode is not valid."),
+					ChmodValidator{},
 				},
 			},
 			"headers": schema.MapAttribute{
