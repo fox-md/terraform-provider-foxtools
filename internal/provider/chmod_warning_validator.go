@@ -35,7 +35,7 @@ func (v ChmodValidator) ValidateString(ctx context.Context, req validator.String
 		resp.Diagnostics.AddAttributeWarning(
 			req.Path,
 			"Chmod incompatible OS",
-			"Configured chmod is going to be ingnored.",
+			"Configured chmod is going to be ignored.",
 		)
 	}
 }
