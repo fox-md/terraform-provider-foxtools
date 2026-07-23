@@ -19,11 +19,11 @@ type ChmodValidator struct {
 }
 
 func (v ChmodValidator) Description(_ context.Context) string {
-	return "ETag or Last-Modified headers validator."
+	return "OS family chmod compatibility validator."
 }
 
 func (v ChmodValidator) MarkdownDescription(_ context.Context) string {
-	return "ETag or Last-Modified headers validator."
+	return "OS family chmod compatibility validator."
 }
 
 func (v ChmodValidator) ValidateString(ctx context.Context, req validator.StringRequest, resp *validator.StringResponse) {
@@ -34,8 +34,8 @@ func (v ChmodValidator) ValidateString(ctx context.Context, req validator.String
 	if !IsOSChmodCompat() {
 		resp.Diagnostics.AddAttributeWarning(
 			req.Path,
-			"Incompatible chmod OS",
-			"Setting is going to be ingnored.",
+			"Chmod incompatible OS",
+			"Configured chmod is going to be ingnored.",
 		)
 	}
 }
