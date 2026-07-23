@@ -4,11 +4,17 @@
 package provider
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/djherbis/times"
@@ -21,6 +27,7 @@ import (
 )
 
 func TestFileDownload(t *testing.T) {
+	requireNonWindows(t)
 
 	sha256, _ := SHA256File(ProjectRoot() + "/tests/file_download/file1.json")
 
@@ -48,6 +55,7 @@ resource "foxtools_file_download" "test" {
 }
 
 func TestFileDownloadNoEtag(t *testing.T) {
+	requireNonWindows(t)
 
 	sha256, _ := SHA256File(ProjectRoot() + "/tests/file_download/file1.json")
 
@@ -78,6 +86,8 @@ resource "foxtools_file_download" "test" {
 }
 
 func TestFileDownloadNoCachingHeaders(t *testing.T) {
+	requireNonWindows(t)
+
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "test.json")
 
@@ -101,6 +111,7 @@ resource "foxtools_file_download" "test" {
 }
 
 func TestFileDownloadCustomPermissions(t *testing.T) {
+	requireNonWindows(t)
 
 	sha256, _ := SHA256File(ProjectRoot() + "/tests/file_download/file1.json")
 
@@ -238,6 +249,7 @@ resource "foxtools_file_download" "test" {
 }
 
 func TestFileDownloadWrongPermissions(t *testing.T) {
+	requireNonWindows(t)
 
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "test.json")
@@ -261,6 +273,7 @@ resource "foxtools_file_download" "test" {
 }
 
 func TestFileDownloadBasicAuth(t *testing.T) {
+	requireNonWindows(t)
 
 	sha256, _ := SHA256File(ProjectRoot() + "/tests/file_download/file1.json")
 
@@ -300,6 +313,7 @@ resource "foxtools_file_download" "test" {
 }
 
 func TestFileDownloadSetHeaders(t *testing.T) {
+	requireNonWindows(t)
 
 	var stateTimestamp string
 	var localTimestamp string
@@ -430,6 +444,7 @@ resource "foxtools_file_download" "test" {
 }
 
 func TestFileDownloadChangeURLDifferentFiles(t *testing.T) {
+	requireNonWindows(t)
 
 	var stateTimestamp string
 	var localTimestamp string
@@ -556,6 +571,7 @@ resource "foxtools_file_download" "test" {
 }
 
 func TestFileDownloadChangeURLsSameFile(t *testing.T) {
+	requireNonWindows(t)
 
 	var stateTimestamp string
 	var localTimestamp string
@@ -652,6 +668,7 @@ resource "foxtools_file_download" "test" {
 }
 
 func TestFileDownloadChangePathDifferentFiles(t *testing.T) {
+	requireNonWindows(t)
 
 	var stateTimestamp string
 	var localTimestamp string
@@ -751,6 +768,7 @@ resource "foxtools_file_download" "test" {
 }
 
 func TestFileDownloadChangePathSameFile(t *testing.T) {
+	requireNonWindows(t)
 
 	var stateTimestamp string
 	var localTimestamp string
@@ -844,6 +862,7 @@ resource "foxtools_file_download" "test" {
 }
 
 func TestFileDownloadMigration101to111(t *testing.T) {
+	requireNonWindows(t)
 
 	sha256, _ := SHA256File(ProjectRoot() + "/tests/file_download/file1.json")
 
@@ -908,6 +927,83 @@ resource "foxtools_file_download" "test" {
 	})
 }
 
+func TestFileDownloaderWindowsChmod(t *testing.T) {
+	requireWindows(t)
+
+	body := []byte("sometext")
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Add("ETag", "\"6a516fe3\"")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	}))
+	defer ts.Close()
+
+	sha256Sum := sha256.Sum256(body)
+	sha256Hex := hex.EncodeToString(sha256Sum[:])
+	filePerm1 := "444"
+	filePerm2 := "644"
+	tmpDir := t.TempDir()
+	filePath := strings.ReplaceAll(filepath.Join(tmpDir, "test.json"), `\`, `\\`)
+
+	resource.ParallelTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: providerConfig + `
+resource "foxtools_file_download" "test" {
+  url = "` + ts.URL + `"
+  filename = "` + filePath + `"
+  file_chmod = "` + filePerm1 + `"
+}
+`,
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"foxtools_file_download.test",
+						tfjsonpath.New("sha256"),
+						knownvalue.StringExact(sha256Hex),
+					),
+					statecheck.ExpectKnownValue(
+						"foxtools_file_download.test",
+						tfjsonpath.New("file_chmod"),
+						knownvalue.StringExact(filePerm1),
+					),
+					statecheck.ExpectKnownValue(
+						"foxtools_file_download.test",
+						tfjsonpath.New("download_timestamp"),
+						knownvalue.NotNull(),
+					),
+				},
+			},
+			{
+				Config: providerConfig + `
+resource "foxtools_file_download" "test" {
+  url = "` + ts.URL + `"
+  filename = "` + filePath + `"
+  file_chmod = "` + filePerm2 + `"
+}
+`,
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"foxtools_file_download.test",
+						tfjsonpath.New("sha256"),
+						knownvalue.StringExact(sha256Hex),
+					),
+					statecheck.ExpectKnownValue(
+						"foxtools_file_download.test",
+						tfjsonpath.New("file_chmod"),
+						knownvalue.StringExact(filePerm2),
+					),
+					statecheck.ExpectKnownValue(
+						"foxtools_file_download.test",
+						tfjsonpath.New("download_timestamp"),
+						knownvalue.NotNull(),
+					),
+				},
+			},
+		},
+	})
+}
+
 func ProjectRoot() string {
 	_, filename, _, ok := runtime.Caller(0)
 	if !ok {
@@ -915,4 +1011,20 @@ func ProjectRoot() string {
 	}
 
 	return filepath.Clean(filepath.Join(filepath.Dir(filename), "../.."))
+}
+
+func requireNonWindows(t *testing.T) {
+	t.Helper()
+
+	if !slices.Contains([]string{"linux", "darwin"}, runtime.GOOS) {
+		t.Skipf("%s is not suitable for this test.", runtime.GOOS)
+	}
+}
+
+func requireWindows(t *testing.T) {
+	t.Helper()
+
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows OS only test")
+	}
 }

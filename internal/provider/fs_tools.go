@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -54,6 +55,9 @@ func getFileChmod(filePath string) (string, error) {
 }
 
 func setFileChmod(filePath string, chmod string) error {
+	if !IsOSChmodCompat() {
+		return nil
+	}
 	perm, err := strconv.ParseUint(chmod, 8, 32)
 	if err != nil {
 		return fmt.Errorf("failed to convert chmod permissions: %v", err)
@@ -64,4 +68,13 @@ func setFileChmod(filePath string, chmod string) error {
 		return fmt.Errorf("failed to set file permissions: %v", err)
 	}
 	return nil
+}
+
+func IsOSChmodCompat() bool {
+	switch runtime.GOOS {
+	case "darwin", "linux", "freebsd", "openbsd", "netbsd", "dragonfly":
+		return true
+	default:
+		return false
+	}
 }
